@@ -46,7 +46,7 @@ struct scatterlist sg[4], sg2[4];
 
 
 static bool dma_m2m_filter(struct dma_chan *chan, void *param)
-{
+{ 
 	if (!imx_dma_is_general_purpose(chan))
 		return false;
 	chan->private = param;
@@ -55,6 +55,7 @@ static bool dma_m2m_filter(struct dma_chan *chan, void *param)
 
 int sdma_open(struct inode *inode, struct file *filp)
 {
+	printk("opening\n");
 	dma_cap_mask_t dma_m2m_mask;
 	struct imx_dma_data m2m_dma_data;
 
@@ -64,11 +65,14 @@ int sdma_open(struct inode *inode, struct file *filp)
 	dma_cap_set(DMA_SLAVE, dma_m2m_mask);
 	m2m_dma_data.peripheral_type = IMX_DMATYPE_MEMORY;
 	m2m_dma_data.priority = DMA_PRIO_HIGH;
+	m2m_dma_data.dma_request = 0;
 	dma_m2m_chan = dma_request_channel(dma_m2m_mask, dma_m2m_filter,
 								&m2m_dma_data);
 	if (!dma_m2m_chan) {
 		printk("Error opening the SDMA memory to memory channel\n");
 		return -EINVAL;
+	} else {
+		printk("opened channel %d, req lin %d\n", dma_m2m_chan->chan_id, m2m_dma_data.dma_request);
 	}
 
 	wbuf = kzalloc(SDMA_BUF_SIZE, GFP_DMA);
@@ -125,15 +129,19 @@ int sdma_open(struct inode *inode, struct file *filp)
 int sdma_release(struct inode * inode, struct file * filp)
 {
 	printk("releasing\n");
-	dmaengine_terminate_all(dma_m2m_chan);
-	dma_release_channel(dma_m2m_chan);
-	dma_m2m_chan = NULL;
+	if (dma_m2m_chan) {
+		dmaengine_terminate_all(dma_m2m_chan);
+		dma_release_channel(dma_m2m_chan);
+		dma_m2m_chan = NULL;
+	}
 	kfree(wbuf);
 	kfree(wbuf2);
 	kfree(wbuf3);
+	kfree(wbuf4);
 	kfree(rbuf);
 	kfree(rbuf2);
 	kfree(rbuf3);
+	kfree(rbuf4);
 	return 0;
 }
 
@@ -161,7 +169,7 @@ ssize_t sdma_read (struct file *filp, char __user * buf, size_t count,
 			return 0;
 		}
 	}
-	printk("buffer 1 copy passed!\n");
+	printk("buffer 1 copy passed! %d\n", rbuf[0]);
 
 	for (i=0; i<SDMA_BUF_SIZE/4; i++) {
 		if (*(rbuf2+i) != *(wbuf2+i)) {
@@ -169,7 +177,7 @@ ssize_t sdma_read (struct file *filp, char __user * buf, size_t count,
 			return 0;
 		}
 	}
-	printk("buffer 2 copy passed!\n");
+	printk("buffer 2 copy passed! %d\n", rbuf2[0]);
 
 	for (i=0; i<SDMA_BUF_SIZE/4; i++) {
 		if (*(rbuf3+i) != *(wbuf3+i)) {
@@ -177,7 +185,7 @@ ssize_t sdma_read (struct file *filp, char __user * buf, size_t count,
 			return 0;
 		}
 	}
-	printk("buffer 3 copy passed!\n");
+	printk("buffer 3 copy passed! %d\n", rbuf3[0]);
 
 	for (i=0; i<SDMA_BUF_SIZE/4; i++) {
 		if (*(rbuf4+i) != *(wbuf4+i)) {
@@ -185,13 +193,14 @@ ssize_t sdma_read (struct file *filp, char __user * buf, size_t count,
 			return 0;
 		}
 	}
-	printk("buffer 4 copy passed!\n");
+	printk("buffer 4 copy passed! %d\n", rbuf4[0]);
 
 	return 0;
 }
 
 static void dma_m2m_callback(void *data)
 {
+	printk("completing\n");
 	complete(&dma_m2m_ok);
 	return ;
 }
@@ -199,16 +208,19 @@ static void dma_m2m_callback(void *data)
 ssize_t sdma_write(struct file * filp, const char __user * buf, size_t count,
 								loff_t * offset)
 {
-	printk("writing\n");
 	u32 *index1, *index2, *index3, *index4, i, ret;
 	struct dma_slave_config dma_m2m_config;
 	struct dma_async_tx_descriptor *dma_m2m_desc;
+	dma_cookie_t cookie;
 	index1 = wbuf;
 	index2 = wbuf2;
 	index3 = wbuf3;
 	index4 = wbuf4;
 	struct timeval end_time;
 	unsigned long end, start;
+
+	printk("writing\n");
+
 	for (i=0; i<SDMA_BUF_SIZE/4; i++) {
 		*(index1 + i) = 0x12121212;
 	}
@@ -240,6 +252,9 @@ ssize_t sdma_write(struct file * filp, const char __user * buf, size_t count,
 #endif
 	dma_m2m_config.direction = DMA_MEM_TO_MEM;
 	dma_m2m_config.dst_addr_width = DMA_SLAVE_BUSWIDTH_2_BYTES;
+
+	// inline funktion i dmaengine.h, 
+	// 	kalder chan->device->device_config
 	dmaengine_slave_config(dma_m2m_chan, &dma_m2m_config);
 
 	sg_init_table(sg, 4);
@@ -248,6 +263,7 @@ ssize_t sdma_write(struct file * filp, const char __user * buf, size_t count,
 	sg_set_buf(&sg[2], wbuf3, SDMA_BUF_SIZE);
 	sg_set_buf(&sg[3], wbuf4, SDMA_BUF_SIZE);
 	ret = dma_map_sg(NULL, sg, 4, dma_m2m_config.direction);
+	printk("ret 1: %d\n", ret);
 
 	sg_init_table(sg2, 4);
 	sg_set_buf(&sg2[0], rbuf, SDMA_BUF_SIZE);
@@ -255,18 +271,37 @@ ssize_t sdma_write(struct file * filp, const char __user * buf, size_t count,
 	sg_set_buf(&sg2[2], rbuf3, SDMA_BUF_SIZE);
 	sg_set_buf(&sg2[3], rbuf4, SDMA_BUF_SIZE);
 	ret = dma_map_sg(NULL, sg2, 4, dma_m2m_config.direction);
+	printk("ret 2: %d\n", ret);
 
 	dma_m2m_desc = dma_m2m_chan->device->
-			device_prep_dma_sg(dma_m2m_chan, sg2, 4, sg, 4, 0);
+			device_prep_dma_sg(dma_m2m_chan, 
+					sg2, 4, 
+					sg, 4, 
+					DMA_MEM_TO_MEM);
 	dma_m2m_desc->callback = dma_m2m_callback;
-	printk("1111111111111\n");
+	printk("%p\n", (void *)dma_m2m_desc);
+	
+	if (dma_m2m_desc) {
+		printk("1111111111111\n");
+	} else {
+		printk("error in prep_dma_sg\n");
+	}
 	do_gettimeofday(&end_time);
 	start = end_time.tv_sec*1000000 + end_time.tv_usec;
 
-	dmaengine_submit(dma_m2m_desc);
+	cookie = dmaengine_submit(dma_m2m_desc);
+	printk("cookie: %d\n", cookie);
 	dma_async_issue_pending(dma_m2m_chan);
 
-	wait_for_completion(&dma_m2m_ok);
+	printk("waiting...\n");
+
+	unsigned long res = wait_for_completion_timeout(&dma_m2m_ok, msecs_to_jiffies(1000));
+
+	if (!res) {
+		printk("timed out!\n");
+		return count;
+	}
+
 	printk("2222222222222\n");
 	do_gettimeofday(&end_time);
 	end = end_time.tv_sec*1000000 + end_time.tv_usec;
@@ -274,7 +309,7 @@ ssize_t sdma_write(struct file * filp, const char __user * buf, size_t count,
 	dma_unmap_sg(NULL, sg, 4, dma_m2m_config.direction);
 	dma_unmap_sg(NULL, sg2, 4, dma_m2m_config.direction);
 
-	return 0;
+	return count;
 }
 
 struct file_operations dma_fops = {
